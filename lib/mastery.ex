@@ -10,6 +10,7 @@ defmodule Mastery do
          else: (error -> error)
   end
 
+  # test
   @spec add_template(any(), any()) :: any()
   def add_template(title, fields) do
     with :ok <- TemplateValidator.errors(fields),
