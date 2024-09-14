@@ -10,6 +10,10 @@ defmodule Mastery.Boundary.QuizSession do
     }
   end
 
+  def end_session(names) do
+    Enum.each(names, fn name -> GenServer.stop(via(name)) end)
+  end
+
   def start_link({quiz, email}) do
     GenServer.start_link(__MODULE__, {quiz, email}, name: via({quiz.title, email}))
   end
@@ -21,13 +25,20 @@ defmodule Mastery.Boundary.QuizSession do
     )
   end
 
+  def active_sessions_for(title) do
+    Mastery.Supervisor.QuizSession
+    |> DynamicSupervisor.which_children()
+    |> Enum.filter(&child_pid?/1)
+    |> Enum.flat_map(&active_sessions(&1, title))
+  end
+
   # API
   def select_question(name) do
     GenServer.call(via(name), :select_question)
   end
 
-  def answer_question(name, answer) do
-    GenServer.call(via(name), {:answer_question, answer})
+  def answer_question(name, answer, persistence_fn) do
+    GenServer.call(via(name), {:answer_question, answer, persistence_fn})
   end
 
   def init({quiz, email}) do
@@ -39,10 +50,15 @@ defmodule Mastery.Boundary.QuizSession do
     {:reply, quiz.current_question.asked, {quiz, email}}
   end
 
-  def handle_call({:answer_question, answer}, _from, {quiz, email}) do
-    quiz
-    |> Quiz.answer_question(Response.new(quiz, email, answer))
-    |> Quiz.select_question()
+  def handle_call({:answer_question, answer, fun}, _from, {quiz, email}) do
+    fun = fun || fn r, f -> f.(r) end
+    response = Response.new(quiz, email, answer)
+
+    fun.(response, fn r ->
+      quiz
+      |> Quiz.answer_question(r)
+      |> Quiz.select_question()
+    end)
     |> maybe_finish(email)
   end
 
@@ -54,5 +70,17 @@ defmodule Mastery.Boundary.QuizSession do
 
   def via({_title, _email} = name) do
     {:via, Registry, {Mastery.Registry.QuizSession, name}}
+  end
+
+  defp child_pid?({:undefined, pid, :worker, [__MODULE__]}) when is_pid(pid), do: true
+
+  defp child_pid?(_child), do: false
+
+  defp active_sessions({:undefined, pid, :worker, [__MODULE__]}, title) do
+    Mastery.Registry.QuizSession
+    |> Registry.keys(pid)
+    |> Enum.filter(fn {quiz_title, _email} ->
+      quiz_title == title
+    end)
   end
 end
